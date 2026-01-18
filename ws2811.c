@@ -58,19 +58,19 @@
 #define OSC_FREQ                                 19200000   // crystal frequency
 #define OSC_FREQ_PI4                             54000000   // Pi 4 crystal frequency
 
-/* 4 colors (R, G, B + W), 8 bits per byte, 3 symbols per bit + 55uS low for reset signal */
-#define LED_COLOURS                              4
+/* colors (R, G, B or R, G, B, W), 8 bits per byte, 3 symbols per bit + 55uS low for reset signal */
+#define LED_COLOURS(channel)                     (((channel)->strip_type & SK6812_SHIFT_WMASK) ? 4 : 3)
 #define LED_RESET_uS                             55
-#define LED_BIT_COUNT(leds, freq)                ((leds * LED_COLOURS * 8 * 3) + ((LED_RESET_uS * \
+#define LED_BIT_COUNT(leds, colors, freq)        ((leds * colors * 8 * 3) + ((LED_RESET_uS * \
                                                   (freq * 3)) / 1000000))
 
 /* Minimum time to wait for reset to occur in microseconds. */
 #define LED_RESET_WAIT_TIME                      300
 
 // Pad out to the nearest uint32 + 32-bits for idle low/high times the number of channels
-#define PWM_BYTE_COUNT(leds, freq)               (((((LED_BIT_COUNT(leds, freq) >> 3) & ~0x7) + 4) + 4) * \
+#define PWM_BYTE_COUNT(leds, colors, freq)       (((((LED_BIT_COUNT(leds, colors, freq) >> 3) & ~0x7) + 4) + 4) * \
                                                   RPI_PWM_CHANNELS)
-#define PCM_BYTE_COUNT(leds, freq)               ((((LED_BIT_COUNT(leds, freq) >> 3) & ~0x7) + 4) + 4)
+#define PCM_BYTE_COUNT(leds, colors, freq)       ((((LED_BIT_COUNT(leds, colors, freq) >> 3) & ~0x7) + 4) + 4)
 
 // Driver mode definitions
 #define NONE	0
@@ -105,6 +105,7 @@ typedef struct ws2811_device
     volatile cm_clk_t *cm_clk;
     videocore_mbox_t mbox;
     int max_count;
+    int max_color_count;
 } ws2811_device_t;
 
 /**
@@ -139,6 +140,29 @@ static int max_channel_led_count(ws2811_t *ws2811)
         if (ws2811->channel[chan].count > max)
         {
             max = ws2811->channel[chan].count;
+        }
+    }
+
+    return max;
+}
+
+/**
+ * Iterate through the channels and find the largest color count.
+ *
+ * @param    ws2811  ws2811 instance pointer.
+ *
+ * @returns  Maximum number of colors in all channels (3 for RGB, 4 for RGBW).
+ */
+static int max_channel_color_count(ws2811_t *ws2811)
+{
+    int chan, max = 0;
+
+    for (chan = 0; chan < RPI_PWM_CHANNELS; chan++)
+    {
+        int colors = LED_COLOURS(&ws2811->channel[chan]);
+        if (colors > max)
+        {
+            max = colors;
         }
     }
 
@@ -337,6 +361,7 @@ static int setup_pwm(ws2811_t *ws2811)
     volatile pwm_t *pwm = device->pwm;
     volatile cm_clk_t *cm_clk = device->cm_clk;
     int maxcount = device->max_count;
+    int maxcolors = device->max_color_count;
     uint32_t freq = ws2811->freq;
     int32_t byte_count;
 
@@ -384,7 +409,7 @@ static int setup_pwm(ws2811_t *ws2811)
     pwm->ctl |= RPI_PWM_CTL_PWEN1 | RPI_PWM_CTL_PWEN2;
 
     // Initialize the DMA control block
-    byte_count = PWM_BYTE_COUNT(maxcount, freq);
+    byte_count = PWM_BYTE_COUNT(maxcount, maxcolors, freq);
     dma_cb->ti = RPI_DMA_TI_NO_WIDE_BURSTS |  // 32-bit transfers
                  RPI_DMA_TI_WAIT_RESP |       // wait for write complete
                  RPI_DMA_TI_DEST_DREQ |       // user peripheral flow control
@@ -420,6 +445,7 @@ static int setup_pcm(ws2811_t *ws2811)
     volatile cm_clk_t *cm_clk = device->cm_clk;
     //int maxcount = max_channel_led_count(ws2811);
     int maxcount = device->max_count;
+    int maxcolors = device->max_color_count;
     uint32_t freq = ws2811->freq;
     int32_t byte_count;
 
@@ -458,7 +484,7 @@ static int setup_pcm(ws2811_t *ws2811)
     pcm->dreq = (RPI_PCM_DREQ_TX(0x3F) | RPI_PCM_DREQ_TX_PANIC(0x10)); // Set FIFO tresholds
 
     // Initialize the DMA control block
-    byte_count = PCM_BYTE_COUNT(maxcount, freq);
+    byte_count = PCM_BYTE_COUNT(maxcount, maxcolors, freq);
     dma_cb->ti = RPI_DMA_TI_NO_WIDE_BURSTS |  // 32-bit transfers
                  RPI_DMA_TI_WAIT_RESP |       // wait for write complete
                  RPI_DMA_TI_DEST_DREQ |       // user peripheral flow control
@@ -567,7 +593,8 @@ void pwm_raw_init(ws2811_t *ws2811)
 {
     volatile uint32_t *pxl_raw = (uint32_t *)ws2811->device->pxl_raw;
     int maxcount = ws2811->device->max_count;
-    int wordcount = (PWM_BYTE_COUNT(maxcount, ws2811->freq) / sizeof(uint32_t)) /
+    int maxcolors = ws2811->device->max_color_count;
+    int wordcount = (PWM_BYTE_COUNT(maxcount, maxcolors, ws2811->freq) / sizeof(uint32_t)) /
                     RPI_PWM_CHANNELS;
     int chan;
 
@@ -595,7 +622,8 @@ void pcm_raw_init(ws2811_t *ws2811)
 {
     volatile uint32_t *pxl_raw = (uint32_t *)ws2811->device->pxl_raw;
     int maxcount = ws2811->device->max_count;
-    int wordcount = PCM_BYTE_COUNT(maxcount, ws2811->freq) / sizeof(uint32_t);
+    int maxcolors = ws2811->device->max_color_count;
+    int wordcount = PCM_BYTE_COUNT(maxcount, maxcolors, ws2811->freq) / sizeof(uint32_t);
     int i;
 
     for (i = 0; i < wordcount; i++)
@@ -837,7 +865,7 @@ static ws2811_return_t spi_init(ws2811_t *ws2811)
     channel->bshift = (channel->strip_type >> 0)  & 0xff;
 
     // Allocate SPI transmit buffer (same size as PCM)
-    device->pxl_raw = malloc(PCM_BYTE_COUNT(device->max_count, ws2811->freq));
+    device->pxl_raw = malloc(PCM_BYTE_COUNT(device->max_count, device->max_color_count, ws2811->freq));
     if (device->pxl_raw == NULL)
     {
         ws2811_cleanup(ws2811);
@@ -856,7 +884,7 @@ static ws2811_return_t spi_transfer(ws2811_t *ws2811)
     memset(&tr, 0, sizeof(struct spi_ioc_transfer));
     tr.tx_buf = (unsigned long)ws2811->device->pxl_raw;
     tr.rx_buf = 0;
-    tr.len = PCM_BYTE_COUNT(ws2811->device->max_count, ws2811->freq);
+    tr.len = PCM_BYTE_COUNT(ws2811->device->max_count, ws2811->device->max_color_count, ws2811->freq);
 
     ret = ioctl(ws2811->device->spi_fd, SPI_IOC_MESSAGE(1), &tr);
     if (ret < 1)
@@ -910,6 +938,7 @@ ws2811_return_t ws2811_init(ws2811_t *ws2811)
     }
 
     device->max_count = max_channel_led_count(ws2811);
+    device->max_color_count = max_channel_color_count(ws2811);
 
     if (device->driver_mode == SPI) {
         return spi_init(ws2811);
@@ -918,12 +947,12 @@ ws2811_return_t ws2811_init(ws2811_t *ws2811)
     // Determine how much physical memory we need for DMA
     switch (device->driver_mode) {
     case PWM:
-        device->mbox.size = PWM_BYTE_COUNT(device->max_count, ws2811->freq) +
+        device->mbox.size = PWM_BYTE_COUNT(device->max_count, device->max_color_count, ws2811->freq) +
                             sizeof(dma_cb_t);
         break;
 
     case PCM:
-        device->mbox.size = PCM_BYTE_COUNT(device->max_count, ws2811->freq) +
+        device->mbox.size = PCM_BYTE_COUNT(device->max_count, device->max_color_count, ws2811->freq) +
                             sizeof(dma_cb_t);
         break;
     }
@@ -1266,7 +1295,7 @@ ws2811_return_t  ws2811_render(ws2811_t *ws2811)
         return ret;
     }
 
-    if (ws2811->render_wait_time != 0) {
+    if (ws2811->render_wait_time != 0 && driver_mode != SPI) {  // SPI is blocking and does not need wait
         const uint64_t current_timestamp = get_microsecond_timestamp();
         uint64_t time_diff = current_timestamp - previous_timestamp;
 
