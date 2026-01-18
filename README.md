@@ -183,14 +183,17 @@ changed in `/boot/cmdline.txt` by appending
     spidev.bufsiz=32768
 ```
 
-On an RPi 3 you have to change the GPU core frequency to 250 MHz, otherwise
+On an RPi 3 you have to change the GPU core frequency to fixed 400 MHz, otherwise
 the SPI clock has the wrong frequency.
 
 Do this by adding the following line to /boot/config.txt and reboot:
 
 ```
-    core_freq=250
+    core_freq=400
+    core_freq_min=400
 ```
+
+(NOTE: Previously 250 MHz was recommended, but as of Jan 2026 on Raspbian Trixie this updated instruction is correct for me.)
 
 On an RPi 4 you must set a fixed frequency to avoid the idle CPU scaling changing the SPI frequency and breaking the ws281x timings:
 
@@ -203,6 +206,12 @@ Do this by adding the following lines to /boot/config.txt and reboot:
 
 SPI requires you to be in the `gpio` group if you wish to control your LEDs
 without root.
+
+### Timing & Blocking
+
+In PWM and PCM mode, `ws2811_render` blocks only if a previous frame write is ongoing. Then, it returns as soon as the transmission is started. The write out will happen in the background, with the PWM/PCM peripherals reading from memory via DMA.
+
+In SPI mode, `ws2811_render` blocks until the frame write is complete, because the kernel driver does. However, it is still using SPI hardware peripheral which reads the buffer via DMA, so CPU usage will not be high. If you want to do other work (e.g. rendering the next frame) during the transfer, you should use another thread.
 
 ### Comparison PWM/PCM/SPI
 
