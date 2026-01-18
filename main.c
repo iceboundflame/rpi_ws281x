@@ -42,6 +42,7 @@ static char VERSION[] = "XX.YY.ZZ";
 #include <signal.h>
 #include <stdarg.h>
 #include <getopt.h>
+#include <time.h>
 
 
 #include "clk.h"
@@ -72,6 +73,7 @@ int height = HEIGHT;
 int led_count = LED_COUNT;
 
 int clear_on_exit = 0;
+int benchmark = 0;
 
 ws2811_t ledstring =
 {
@@ -222,6 +224,7 @@ void parseargs(int argc, char **argv, ws2811_t *ws2811)
 		{"height", required_argument, 0, 'y'},
 		{"width", required_argument, 0, 'x'},
 		{"version", no_argument, 0, 'v'},
+		{"benchmark", no_argument, 0, 'b'},
 		{0, 0, 0, 0}
 	};
 
@@ -229,7 +232,7 @@ void parseargs(int argc, char **argv, ws2811_t *ws2811)
 	{
 
 		index = 0;
-		c = getopt_long(argc, argv, "cd:g:his:vx:y:", longopts, &index);
+		c = getopt_long(argc, argv, "bcd:g:his:vx:y:", longopts, &index);
 
 		if (c == -1)
 			break;
@@ -253,6 +256,7 @@ void parseargs(int argc, char **argv, ws2811_t *ws2811)
 				"-i (--invert)  - invert pin output (pulse LOW)\n"
 				"-c (--clear)   - clear matrix on exit.\n"
 				"-v (--version) - version information\n"
+				"-b (--benchmark) - benchmark mode: no delay, print FPS\n"
 				, argv[0]);
 			exit(-1);
 
@@ -282,6 +286,10 @@ void parseargs(int argc, char **argv, ws2811_t *ws2811)
 
 		case 'i':
 			ws2811->channel[0].invert=1;
+			break;
+
+		case 'b':
+			benchmark=1;
 			break;
 
 		case 'c':
@@ -390,20 +398,43 @@ int main(int argc, char *argv[])
         return ret;
     }
 
+    uint64_t frame_count = 0;
+    struct timespec start_time, end_time;
+    if (benchmark) {
+        fprintf(stderr, "Benchmark mode: rendering single frame as fast as possible...\n");
+        clock_gettime(CLOCK_MONOTONIC, &start_time);
+    }
+
     while (running)
     {
-        matrix_raise();
-        matrix_bottom();
-        matrix_render();
+        if (!benchmark) {
+            matrix_raise();
+            matrix_bottom();
+            matrix_render();
+        }
 
         if ((ret = ws2811_render(&ledstring)) != WS2811_SUCCESS)
         {
             fprintf(stderr, "ws2811_render failed: %s\n", ws2811_get_return_t_str(ret));
             break;
         }
+        frame_count++;
 
-        // 15 frames /sec
-        usleep(1000000 / 15);
+        if (!benchmark) {
+            // 15 frames /sec
+            usleep(1000000 / 15);
+        }
+    }
+
+    if (benchmark) {
+        clock_gettime(CLOCK_MONOTONIC, &end_time);
+        double elapsed = (end_time.tv_sec - start_time.tv_sec) +
+                         (end_time.tv_nsec - start_time.tv_nsec) / 1e9;
+        double fps = frame_count / elapsed;
+        fprintf(stderr, "Benchmark results:\n");
+        fprintf(stderr, "  Frames: %llu\n", (unsigned long long)frame_count);
+        fprintf(stderr, "  Time: %.3f seconds\n", elapsed);
+        fprintf(stderr, "  FPS: %.2f\n", fps);
     }
 
     if (clear_on_exit) {
